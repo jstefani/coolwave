@@ -17,7 +17,6 @@ MusicUtil = require 'musicutil'
 local midi_device
 local page = 1
 local pages = { "WAVE", "ENV", "PHASE", "DELAY", "ARP" }
-local phase_ui = 0
 local ui_metro
 local rand_flash = 0
 local k1_held = false
@@ -28,7 +27,7 @@ local mono = false
 local arp_on = false
 local arp_clock = nil
 local arp_step = 1
-local arp_dir = 1
+local arp_len = 0         -- last seen sequence length, to detect held-key changes
 local arp_playing = nil   -- currently sounding arp note id
 local ARP_ID = 8000
 
@@ -44,6 +43,7 @@ local WAVE_LABELS = {
 }
 
 local ARP_TYPES = { "up", "down", "updown", "order" }
+local ARP_DECAY_LABELS = { "long", "med", "short", "tight", "click" }
 
 -- PD-ish single-note chord expand (Maj + oct) when only one key held
 local CHORD_INTERVALS = { 0, 4, 7, 12 }
@@ -71,11 +71,9 @@ local function bang_engine()
   engine.delayPanRate(params:get("delay_pan_rate"))
   engine.amp(params:get("amp"))
   engine.mono(mono and 1 or 0)
-  engine.octave(params:get("octave"))
-  engine.arpOn(arp_on and 1 or 0)
-  engine.arpSpeed(params:get("arp_speed"))
-  engine.arpType(params:get("arp_type") - 1)
-  engine.arpDecay(params:get("arp_decay") - 1)
+  engine.monoLegato(params:get("mono_legato") - 1)
+  -- octave is applied in Lua (note_hz); arp runs on a Lua clock.
+  -- neither has an engine command.
 end
 
 -- true only while the user is actively turning the arp-decay control;
@@ -148,11 +146,16 @@ local function arp_sequence()
     for i = #notes, 1, -1 do table.insert(rev, notes[i]) end
     return rev
   elseif typ == 3 then
-    -- updown (exclude duplicate ends)
+    -- updown, excluding duplicated turnaround notes.
+    -- 2 notes would leave an empty descending half and read as plain "up",
+    -- so fall back to a straight up/down bounce there.
     table.sort(notes)
     if #notes <= 1 then return notes end
     local seq = {}
     for i = 1, #notes do table.insert(seq, notes[i]) end
+    if #notes == 2 then
+      return seq
+    end
     for i = #notes - 1, 2, -1 do table.insert(seq, notes[i]) end
     return seq
   else
@@ -179,7 +182,22 @@ local function arp_tick()
     return
   end
 
-  if arp_step > #seq then arp_step = 1 end
+  -- advance by index so patterns that repeat a note (updown's turnaround)
+  -- still walk the whole shape. only re-anchor on the sounding note when the
+  -- sequence actually changed under us, so adding or releasing a key resumes
+  -- near where it was instead of snapping back to the start.
+  if arp_len ~= #seq then
+    if arp_playing ~= nil then
+      local at = nil
+      for i, n in ipairs(seq) do
+        if n == arp_playing then at = i; break end
+      end
+      if at ~= nil then arp_step = at + 1 end
+    end
+    arp_len = #seq
+  end
+  if arp_step > #seq or arp_step < 1 then arp_step = 1 end
+
   local note = seq[arp_step]
   local vel = 0.75
   -- use root key velocity if present
@@ -210,6 +228,7 @@ local function start_arp_clock()
   stop_arp_clock()
   if not (arp_on and mono) then return end
   arp_step = 1
+  arp_len = 0
   arp_clock = clock.run(function()
     while true do
       local spd = params:get("arp_speed") -- Hz-ish 1..20
@@ -227,7 +246,6 @@ local function sync_arp()
     stop_arp_clock()
     -- re-sound held notes if leaving arp
   end
-  engine.arpOn(arp_on and 1 or 0)
 end
 
 local function set_mono(v)
@@ -258,12 +276,8 @@ local function voice_note_on(note, vel)
     return
   end
 
-  if mono then
-    -- engine mono: one voice, glide
-    engine.noteOn(note_hz(note), vel, note)
-  else
-    engine.noteOn(note_hz(note), vel, note)
-  end
+  -- engine handles mono voice allocation and glide internally
+  engine.noteOn(note_hz(note), vel, note)
 end
 
 local function voice_note_off(note)
@@ -354,7 +368,7 @@ end
 local function add_params()
   params:add_separator("coolwave")
 
-  params:add_group("wave", 5)
+  params:add_group("wave", 6)
   params:add_option("wave", "wave", WAVE_LABELS, 1)
   params:set_action("wave", function(v) engine.wave(v - 1); redraw() end)
 
@@ -365,10 +379,13 @@ local function add_params()
   params:set_action("porta", function(v) engine.porta(v) end)
 
   params:add_number("octave", "octave", -3, 3, 0)
-  params:set_action("octave", function(v) engine.octave(v); redraw() end)
+  params:set_action("octave", function(v) redraw() end)
 
   params:add_option("mono", "voicing", { "poly", "mono" }, 1)
   params:set_action("mono", function(v) apply_mono(v == 2) end)
+
+  params:add_option("mono_legato", "mono legato", { "off", "on" }, 1)
+  params:set_action("mono_legato", function(v) engine.monoLegato(v - 1) end)
 
   params:add_group("env", 4)
   params:add_control("attack", "attack", controlspec.new(0.001, 4, "exp", 0, 0.01, "s"))
@@ -413,18 +430,21 @@ local function add_params()
   end)
   params:add_control("arp_speed", "arp speed", controlspec.new(0.5, 20, "lin", 0.1, 8, "Hz"))
   params:set_action("arp_speed", function(v)
-    engine.arpSpeed(v)
     if arp_on and mono then start_arp_clock() end
   end)
   params:add_option("arp_type", "arp type", ARP_TYPES, 1)
-  params:set_action("arp_type", function(v) engine.arpType(v - 1); redraw() end)
-  params:add_option("arp_decay", "arp decay", { "long", "med", "short", "tight", "click" }, 2)
+  params:set_action("arp_type", function(v) arp_step = 1; redraw() end)
+  params:add_option("arp_decay", "arp decay", ARP_DECAY_LABELS, 2)
   params:set_action("arp_decay", function(v)
-    engine.arpDecay(v - 1)
     -- only reshape decay/sustain when the user turns this control.
     -- a pset read / bang must leave the saved envelope alone.
     if arp_decay_live then apply_arp_decay(v) end
   end)
+
+  params:add_group("midi", 1)
+  local ch_opts = { "all" }
+  for i = 1, 16 do table.insert(ch_opts, tostring(i)) end
+  params:add_option("midi_channel", "midi channel", ch_opts, 1)
 
   params:add_binary("all_notes_off", "all notes off", "trigger", 0)
   params:set_action("all_notes_off", function(v)
@@ -434,8 +454,24 @@ local function add_params()
   params:bang()
 end
 
+-- cc -> param. values are normalised 0..1 and mapped through the param's
+-- own controlspec, so each cc covers the full declared range.
+local CC_MAP = {
+  [1]  = "phase",
+  [74] = "cutoff",
+  [71] = "res",
+  [72] = "release",
+  [73] = "attack",
+  [91] = "delay_vol",
+  [93] = "delay_fb"
+}
+
 local function midi_event(data)
   local msg = midi.to_msg(data)
+
+  local want = params:get("midi_channel")
+  if want > 1 and msg.ch ~= nil and msg.ch ~= (want - 1) then return end
+
   if msg.type == "note_on" then
     if msg.vel == 0 then
       voice_note_off(msg.note)
@@ -447,7 +483,14 @@ local function midi_event(data)
     voice_note_off(msg.note)
     redraw()
   elseif msg.type == "cc" then
-    -- optional: ignore
+    local id = CC_MAP[msg.cc]
+    if id ~= nil then
+      local p = params:lookup_param(id)
+      if p.controlspec ~= nil then
+        params:set_raw(id, msg.val / 127)
+      end
+      redraw()
+    end
   end
 end
 
@@ -521,7 +564,6 @@ function init()
   midi_device.event = midi_event
 
   ui_metro = metro.init(function()
-    phase_ui = phase_ui + 0.08
     if rand_flash > 0 then
       rand_flash = math.max(0, rand_flash - 0.05)
     end
@@ -574,7 +616,7 @@ function enc(n, d)
     elseif page == 2 then
       if n == 2 then delta_param("decay", d)
       elseif n == 3 then delta_param("sustain", d) end
-    else
+    elseif page == 1 then
       if n == 2 then delta_param("porta", d)
       elseif n == 3 then delta_param("octave", d) end
     end
@@ -625,7 +667,7 @@ function redraw()
   screen.move(0, 63)
   if k1_held then
     if page == 5 then
-      screen.text("spd " .. string.format("%.1f", params:get("arp_speed")) .. "  decay " .. ({ "long", "med", "short", "tight", "click" })[params:get("arp_decay")])
+      screen.text("spd " .. string.format("%.1f", params:get("arp_speed")) .. "  decay " .. ARP_DECAY_LABELS[params:get("arp_decay")])
     elseif page == 4 then
       screen.text("vol " .. fmt_f(params:get("delay_vol")) .. "  pan " .. string.format("%.1f", params:get("delay_pan_rate")))
     elseif page == 3 then
@@ -646,7 +688,7 @@ function redraw()
     elseif page == 3 then
       extra = string.format("lfo %.1fHz", params:get("phase_lfo_rate"))
     elseif page == 5 then
-      extra = string.format("spd %.1f  %s", params:get("arp_speed"), ({ "long", "med", "short", "tight", "click" })[params:get("arp_decay")])
+      extra = string.format("spd %.1f  %s", params:get("arp_speed"), ARP_DECAY_LABELS[params:get("arp_decay")])
       if not mono then extra = extra .. " (need MONO)" end
     end
     if rand_flash > 0 then

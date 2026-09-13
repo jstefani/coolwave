@@ -31,9 +31,10 @@ Wavetables are 1024-sample cycles resampled from the PD `wavs/` (original 600-sa
 | **E1** | Page: `WAVE` → `ENV` → `PHASE` → `DELAY` → `ARP` (stops at ends) |
 | **E2 / E3** | Edit the two params on the current page |
 | **K1 + E2/E3** | Extra params (page-dependent; on WAVE: porta / octave) |
-| **K2** | **MONO / POLY** toggle |
+| **K2** | **MONO / POLY** toggle (also a saved param: `voicing`) |
 | **K3** | Randomize patch (NES-leaning ranges) |
 | **MIDI notes** | Play voices (poly 6 with steal, or mono with portamento) |
+| **MIDI CC** | 1 phase · 74 cutoff · 71 res · 73 attack · 72 release · 91 delay vol · 93 delay fb |
 
 ### Page map
 
@@ -50,7 +51,9 @@ Wavetables are 1024-sample cycles resampled from the PD `wavs/` (original 600-sa
 1. Press **K2** for **MONO**
 2. ARP page → turn arp **ON**
 3. Hold a note (expands to a Maj chord + octave, PD-style) or hold a chord; notes arpeggiate at **speed** with **type**
-4. **Arp decay** presets map like PD `arpdecay` into decay/sustain
+4. **Arp decay** presets map like PD `arpdecay` into decay/sustain — applied only when you turn that control, so loading a pset keeps its saved envelope
+
+Adding or releasing a key mid-pattern resumes near the current position rather than restarting. `updown` bounces on two held notes instead of collapsing to `up`.
 
 Portamento is especially useful in mono (WAVE page, K1+E2).
 
@@ -60,12 +63,13 @@ Phase is a **0–1** offset into the wavetable cycle (plus optional LFO). **Not 
 
 ## Params (menu)
 
-- wave, amp, portamento, octave  
+- wave, amp, portamento, octave, **voicing** (poly/mono), **mono legato**  
 - attack / decay / sustain / release  
 - phase, phase LFO rate/amt  
 - cutoff, resonance  
 - delay time / fb / vol / pan rate  
 - arp on, speed, type, decay  
+- **midi channel** (all, or 1–16)  
 - **all notes off** (trigger)
 
 ## Engine commands
@@ -88,10 +92,13 @@ Phase is a **0–1** offset into the wavetable cycle (plus optional LFO). **Not 
 | `delayTime` `delayFb` `delayVol` `delayPanRate` | f | shared FX |
 | `amp` | f | master |
 | `mono` | i | 0/1 |
-| `octave` | i | applied in Lua to MIDI→hz |
-| `arpOn` `arpSpeed` `arpType` `arpDecay` | — | API parity; **arp runs in Lua clock** |
+| `monoLegato` | i | 0/1; when on, a new mono note glides without re-striking the envelope |
+
+Octave is applied in Lua (`note_hz`) before the hz reaches the engine, and the arp runs on a Lua clock — neither has an engine command.
 
 Architecture: Phasor + BufRd wavetable voices (max 6, steal), RLPF filter, shared delay with leslie-ish autopan. Does **not** load `moog~.pd_linux`.
+
+Node order is `clear → controls → voices → fx`: a `coolWaveClear` synth `ReplaceOut`s silence onto the private voice bus each block before voices sum into it, so stale audio can't leak into the delay's feedback loop. Control synths sit in their own group ahead of the voices so a voice reads current-block control values.
 
 ## Waves (28)
 

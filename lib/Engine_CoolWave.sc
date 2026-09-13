@@ -13,12 +13,16 @@ Engine_CoolWave : CroneEngine {
   var <monoId;
   var <monoSynth;
   var <fxSynth;
+  var <clearSynth;
   var <voiceBus;
+  var <clearGrp;
+  var <ctlGrp;
   var <grp;
   var <fxGrp;
 
   var <waveIndex;
   var <monoMode;
+  var <monoLegato;
 
   var <busAmp, <busPorta, <busPhase, <busPhaseLfoRate, <busPhaseLfoAmt;
   var <busAttack, <busDecay, <busSustain, <busRelease;
@@ -41,9 +45,16 @@ Engine_CoolWave : CroneEngine {
     monoSynth = nil;
     waveIndex = 0;
     monoMode = false;
+    monoLegato = false;
     bufs = Array.newClear(waveCount);
 
-    grp = Group.new(context.xg);
+    // node order matters: clear the private voice bus, THEN sum voices into
+    // it, THEN read it in the fx synth. without the clear, whatever was on the
+    // bus last block persists once voices free and gets fed back through the
+    // delay's LocalIn.
+    clearGrp = Group.new(context.xg);
+    ctlGrp = Group.after(clearGrp);
+    grp = Group.after(ctlGrp);
     fxGrp = Group.after(grp);
     voiceBus = Bus.audio(s, 2);
 
@@ -63,25 +74,25 @@ Engine_CoolWave : CroneEngine {
     busDelayVol = Bus.control(s, 1); busDelayVol.set(0.15);
     busDelayPanRate = Bus.control(s, 1); busDelayPanRate.set(0.4);
 
-    ctlAmp = { Out.kr(busAmp, Lag.kr(\val.kr(0.55), 0.05)) }.play(grp);
-    ctlPorta = { Out.kr(busPorta, Lag.kr(\val.kr(0.0), 0.05)) }.play(grp);
-    ctlPhase = { Out.kr(busPhase, Lag.kr(\val.kr(0.0), 0.08)) }.play(grp);
-    ctlPhaseLfoRate = { Out.kr(busPhaseLfoRate, Lag.kr(\val.kr(0.0), 0.08)) }.play(grp);
-    ctlPhaseLfoAmt = { Out.kr(busPhaseLfoAmt, Lag.kr(\val.kr(0.0), 0.08)) }.play(grp);
-    ctlAttack = { Out.kr(busAttack, \val.kr(0.01)) }.play(grp);
-    ctlDecay = { Out.kr(busDecay, \val.kr(0.2)) }.play(grp);
-    ctlSustain = { Out.kr(busSustain, \val.kr(0.7)) }.play(grp);
-    ctlRelease = { Out.kr(busRelease, \val.kr(0.25)) }.play(grp);
-    ctlCutoff = { Out.kr(busCutoff, Lag.kr(\val.kr(3500), 0.08)) }.play(grp);
-    ctlRes = { Out.kr(busRes, Lag.kr(\val.kr(0.15), 0.05)) }.play(grp);
-    ctlDelayTime = { Out.kr(busDelayTime, Lag.kr(\val.kr(0.25), 0.1)) }.play(grp);
-    ctlDelayFb = { Out.kr(busDelayFb, Lag.kr(\val.kr(0.2), 0.08)) }.play(grp);
-    ctlDelayVol = { Out.kr(busDelayVol, Lag.kr(\val.kr(0.15), 0.05)) }.play(grp);
-    ctlDelayPanRate = { Out.kr(busDelayPanRate, Lag.kr(\val.kr(0.4), 0.08)) }.play(grp);
+    ctlAmp = { Out.kr(busAmp, Lag.kr(\val.kr(0.55), 0.05)) }.play(ctlGrp);
+    ctlPorta = { Out.kr(busPorta, Lag.kr(\val.kr(0.0), 0.05)) }.play(ctlGrp);
+    ctlPhase = { Out.kr(busPhase, Lag.kr(\val.kr(0.0), 0.08)) }.play(ctlGrp);
+    ctlPhaseLfoRate = { Out.kr(busPhaseLfoRate, Lag.kr(\val.kr(0.0), 0.08)) }.play(ctlGrp);
+    ctlPhaseLfoAmt = { Out.kr(busPhaseLfoAmt, Lag.kr(\val.kr(0.0), 0.08)) }.play(ctlGrp);
+    ctlAttack = { Out.kr(busAttack, \val.kr(0.01)) }.play(ctlGrp);
+    ctlDecay = { Out.kr(busDecay, \val.kr(0.2)) }.play(ctlGrp);
+    ctlSustain = { Out.kr(busSustain, \val.kr(0.7)) }.play(ctlGrp);
+    ctlRelease = { Out.kr(busRelease, \val.kr(0.25)) }.play(ctlGrp);
+    ctlCutoff = { Out.kr(busCutoff, Lag.kr(\val.kr(3500), 0.08)) }.play(ctlGrp);
+    ctlRes = { Out.kr(busRes, Lag.kr(\val.kr(0.15), 0.05)) }.play(ctlGrp);
+    ctlDelayTime = { Out.kr(busDelayTime, Lag.kr(\val.kr(0.25), 0.1)) }.play(ctlGrp);
+    ctlDelayFb = { Out.kr(busDelayFb, Lag.kr(\val.kr(0.2), 0.08)) }.play(ctlGrp);
+    ctlDelayVol = { Out.kr(busDelayVol, Lag.kr(\val.kr(0.15), 0.05)) }.play(ctlGrp);
+    ctlDelayPanRate = { Out.kr(busDelayPanRate, Lag.kr(\val.kr(0.4), 0.08)) }.play(ctlGrp);
 
     // buffers filled by loadDir from Lua (norns.state.dust path)
     SynthDef(\coolWaveVoice, {
-      arg out = 0, bufnum = 0, hz = 440, vel = 0.8, gate = 1,
+      arg out = 0, bufnum = 0, hz = 440, vel = 0.8, gate = 1, t_retrig = 0,
         portaBus, phaseBus, phaseLfoRateBus, phaseLfoAmtBus,
         attackBus, decayBus, sustainBus, releaseBus,
         cutoffBus, resBus;
@@ -105,9 +116,11 @@ Engine_CoolWave : CroneEngine {
       // portamento via Lag (0 = instant). Especially useful in mono.
       freq = Lag.kr(hz, porta);
 
+      // gate opens/closes the envelope; t_retrig re-strikes it without
+      // closing the gate, so a mono voice can re-attack on a new key.
       ampEnv = EnvGen.kr(
         Env.adsr(attack, decay, sustain, release, curve: -3),
-        gate, doneAction: 2
+        gate + t_retrig, doneAction: 2
       );
 
       frames = BufFrames.kr(bufnum);
@@ -121,6 +134,11 @@ Engine_CoolWave : CroneEngine {
       filtered = RLPF.ar(osc, cutoff, (1 - res).clip(0.05, 1));
       sig = filtered * ampEnv * vel * 0.45;
       Out.ar(out, Pan2.ar(sig, 0));
+    }).add;
+
+    SynthDef(\coolWaveClear, {
+      arg bus = 0;
+      ReplaceOut.ar(bus, Silent.ar(2));
     }).add;
 
     SynthDef(\coolWaveFx, {
@@ -152,6 +170,8 @@ Engine_CoolWave : CroneEngine {
     }).add;
 
     s.sync;
+
+    clearSynth = Synth(\coolWaveClear, [\bus, voiceBus.index], clearGrp);
 
     fxSynth = Synth(\coolWaveFx, [
       \out, context.out_b.index,
@@ -192,14 +212,7 @@ Engine_CoolWave : CroneEngine {
       monoMode = msg[1].asInteger > 0;
       this.prAllOff;
     });
-    this.addCommand(\octave, "i", { |msg| /* octave applied in Lua when sending hz */ });
-
-    // arp is Lua clock — commands accepted for API parity
-    this.addCommand(\arpOn, "i", { |msg| });
-    this.addCommand(\arpSpeed, "f", { |msg| });
-    this.addCommand(\arpType, "i", { |msg| });
-    this.addCommand(\arpDecay, "i", { |msg| });
-
+    this.addCommand(\monoLegato, "i", { |msg| monoLegato = msg[1].asInteger > 0 });
     this.addCommand(\loadDir, "s", { |msg|
       var dir = msg[1].asString;
       var fileList = [
@@ -267,7 +280,10 @@ Engine_CoolWave : CroneEngine {
 
     if (monoMode, {
       if (monoSynth.notNil, {
-        monoSynth.set(\hz, hz, \vel, vel.clip(0, 1), \gate, 1, \bufnum, buf.bufnum);
+        // glide to the new pitch. re-strike the envelope unless legato is on,
+        // in which case the held envelope carries through (gate stays open).
+        monoSynth.set(\hz, hz, \vel, vel.clip(0, 1), \bufnum, buf.bufnum);
+        if (monoLegato.not, { monoSynth.set(\t_retrig, 1) });
         monoId = id;
       }, {
         monoSynth = Synth(\coolWaveVoice, this.prVoiceArgs(hz, vel, buf), grp);
@@ -332,6 +348,7 @@ Engine_CoolWave : CroneEngine {
   free {
     this.prAllOff;
     if (fxSynth.notNil, { fxSynth.free });
+    if (clearSynth.notNil, { clearSynth.free });
     [ctlAmp, ctlPorta, ctlPhase, ctlPhaseLfoRate, ctlPhaseLfoAmt,
       ctlAttack, ctlDecay, ctlSustain, ctlRelease,
       ctlCutoff, ctlRes, ctlDelayTime, ctlDelayFb, ctlDelayVol, ctlDelayPanRate
@@ -344,5 +361,7 @@ Engine_CoolWave : CroneEngine {
     bufs.do({ |b| if (b.notNil, { b.free }) });
     if (fxGrp.notNil, { fxGrp.free });
     if (grp.notNil, { grp.free });
+    if (ctlGrp.notNil, { ctlGrp.free });
+    if (clearGrp.notNil, { clearGrp.free });
   }
 }
