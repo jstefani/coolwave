@@ -402,6 +402,13 @@ function randomize_arp()
   params:set("arp_decay", d)
   apply_arp_decay(d)
 
+  -- the arp clock only runs in mono (arp_tick and start_arp_clock both bail
+  -- otherwise), so randomizing it from this page implies you want to hear
+  -- one: force MONO and switch the arp on. both go through params so the
+  -- state is saved and the actions start the clock.
+  params:set("mono", 2)
+  params:set("arp_enable", 2)
+
   rand_flash = 1.0
   redraw()
 end
@@ -827,7 +834,8 @@ function redraw()
       extra = string.format("lfo %.1fHz", params:get("phase_lfo_rate"))
     elseif page == 5 then
       extra = string.format("spd %.1f  %s", params:get("arp_speed"), ARP_DECAY_LABELS[params:get("arp_decay")])
-      if not mono then extra = extra .. " (need MONO)" end
+      -- K3 here switches to MONO and turns the arp on, so point at it
+      if not mono then extra = extra .. " (K3=MONO)" end
     end
     if rand_flash > 0 then
       screen.level(15)

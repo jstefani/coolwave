@@ -50,14 +50,18 @@ Wavetables are 1024-sample cycles resampled from the PD `wavs/` (original 600-sa
 
 ### Arp (favorite in mono)
 
+The arp runs **only in MONO** — in poly, notes go straight to the engine and the arp clock never starts.
+
 1. Press **K2** for **MONO**
 2. ARP page → turn arp **ON**
+
+(or just press **K3** on the ARP page, which does both and randomizes the settings)
 3. Hold a note (expands to a Maj chord + octave, PD-style) or hold a chord; notes arpeggiate at **speed** with **type**
 4. **Arp decay** presets map like PD `arpdecay` into decay/sustain — applied only when you turn that control, so loading a pset keeps its saved envelope
 
 Adding or releasing a key mid-pattern resumes near the current position rather than restarting. `updown` bounces on two held notes instead of collapsing to `up`.
 
-**K3 on the ARP page** randomizes speed, type and decay without touching the tone, and applies the decay preset to the envelope. K3 on any other page randomizes the patch and leaves the arp alone. Neither one toggles arp on/off or poly/mono — those stay where you put them.
+**K3 on the ARP page** randomizes speed, type and decay without touching the tone, applies the decay preset to the envelope, and switches to **MONO** with the arp **on** — the arp clock only runs in mono, so this makes one press always produce an audible arp. K3 on any other page randomizes the patch and leaves the arp and voicing alone.
 
 Portamento is especially useful in mono (WAVE page, K1+E2).
 
