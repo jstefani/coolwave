@@ -7,7 +7,7 @@
 -- E2/E3  edit two params on page
 -- K1 hold + E2/E3  porta / octave (extra)
 -- K2  mono/poly toggle
--- K3  randomize patch (NES-ish)
+-- K3  randomize patch (NES-ish); on the ARP page, randomizes the arp only
 -- MIDI notes → voice synth; arp runs in Lua when MONO+ARP
 
 engine.name = 'CoolWave'
@@ -90,10 +90,9 @@ local function apply_arp_decay(preset)
     { 0.05, 0.0 }
   }
   local p = map[preset] or map[1]
+  -- the param actions already push these to the engine
   params:set("decay", p[1])
   params:set("sustain", p[2])
-  engine.decay(p[1])
-  engine.sustain(p[2])
 end
 
 local function all_notes_off()
@@ -356,11 +355,25 @@ function randomize()
   params:set("delay_pan_rate", 0.1 + math.random() * 2.5)
   params:set("amp", 0.45 + math.random() * 0.25)
 
+  bang_engine()
+  rand_flash = 1.0
+  redraw()
+end
+
+-- K3 on the ARP page. randomizes only the arp, and unlike the patch
+-- randomizer it does apply the arp decay preset to the envelope -- that
+-- preset is the whole point of the control, and you asked for it by
+-- being on this page.
+function randomize_arp()
+  math.randomseed(math.floor(util.time() * 1000) % 2147483647)
+
   params:set("arp_speed", 4 + math.random() * 10)
   params:set("arp_type", math.random(1, 4))
-  params:set("arp_decay", math.random(1, 5))
 
-  bang_engine()
+  local d = math.random(1, 5)
+  params:set("arp_decay", d)
+  apply_arp_decay(d)
+
   rand_flash = 1.0
   redraw()
 end
@@ -592,7 +605,11 @@ function key(n, z)
   elseif n == 2 and z == 1 then
     set_mono(not mono)
   elseif n == 3 and z == 1 then
-    randomize()
+    if page == 5 then
+      randomize_arp()
+    else
+      randomize()
+    end
   end
 end
 
@@ -693,7 +710,7 @@ function redraw()
     end
     if rand_flash > 0 then
       screen.level(15)
-      screen.text("RND")
+      screen.text(page == 5 and "RND ARP" or "RND")
     else
       screen.text(extra .. "  n" .. string.format("%.0f", nheld))
     end
