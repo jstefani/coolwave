@@ -42,6 +42,34 @@ local WAVE_LABELS = {
   "FORM OO", "FORM MM", "FORM SS", "FORM ZZ"
 }
 
+-- splash: 32-point decimations of the real wavetables, so the intro draws
+-- the actual shapes the engine is loading rather than stand-in graphics.
+local SPLASH_WAVES = {
+  { -- NES TRI
+    0.04, 0.19, 0.25, 0.37, 0.48, 0.62, 0.76, 0.88, 0.97, 0.82, 0.69, 0.57,
+    0.43, 0.29, 0.17, 0.04, 0.01, -0.14, -0.28, -0.39, -0.52, -0.67, -0.79,
+    -0.92, -0.91, -0.77, -0.66, -0.52, -0.37, -0.26, -0.21, -0.09
+  },
+  { -- NES PUL1
+    0.57, 0.78, 0.78, 0.78, 0.50, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78,
+    -0.78, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78,
+    -0.78, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78, -0.78
+  },
+  { -- FM BELL
+    0.01, 0.11, 0.18, 0.22, 0.31, 0.34, 0.44, 0.46, 0.55, 0.64, 0.68, 0.76,
+    0.79, 0.90, 0.99, -0.23, -1.00, -0.94, -0.85, -0.77, -0.78, -0.65, -0.65,
+    -0.51, -0.47, -0.45, -0.32, -0.32, -0.19, -0.19, -0.10, 0.00
+  },
+  { -- FORM AH
+    0.01, 0.47, 0.71, 1.00, 0.88, 0.98, 1.00, 1.00, 0.99, 0.88, 1.00, 0.74,
+    0.46, 0.03, -0.71, -0.86, -0.58, -0.50, -0.57, -0.24, -0.10, -0.71, -1.00,
+    -0.99, -0.72, -0.09, -0.13, -0.49, -0.45, -0.48, -0.79, -0.70
+  }
+}
+
+local splash_t = nil      -- elapsed seconds, nil once dismissed
+local SPLASH_DUR = 2.6
+
 local ARP_TYPES = { "up", "down", "updown", "order" }
 local ARP_DECAY_LABELS = { "long", "med", "short", "tight", "click" }
 
@@ -576,7 +604,13 @@ function init()
   midi_device = midi.connect()
   midi_device.event = midi_event
 
+  splash_t = 0
+
   ui_metro = metro.init(function()
+    if splash_t ~= nil then
+      splash_t = splash_t + (1 / 15)
+      if splash_t >= SPLASH_DUR then splash_t = nil end
+    end
     if rand_flash > 0 then
       rand_flash = math.max(0, rand_flash - 0.05)
     end
@@ -598,7 +632,15 @@ function cleanup()
   if ui_metro then ui_metro:stop() end
 end
 
+local function dismiss_splash()
+  if splash_t == nil then return false end
+  splash_t = nil
+  redraw()
+  return true
+end
+
 function key(n, z)
+  if z == 1 and dismiss_splash() then return end
   if n == 1 then
     k1_held = (z == 1)
     redraw()
@@ -614,6 +656,7 @@ function key(n, z)
 end
 
 function enc(n, d)
+  if dismiss_splash() then return end
   if n == 1 then
     page = util.clamp(page + d, 1, #pages)
     redraw()
@@ -650,7 +693,85 @@ function enc(n, d)
   redraw()
 end
 
+-- linear morph between two of the baked tables
+local function splash_sample(i, pos)
+  local n = #SPLASH_WAVES
+  local a = math.floor(pos) % n
+  local b = (a + 1) % n
+  local f = pos - math.floor(pos)
+  local wa = SPLASH_WAVES[a + 1][i]
+  local wb = SPLASH_WAVES[b + 1][i]
+  return wa + (wb - wa) * f
+end
+
+local function draw_splash()
+  local t = splash_t or 0
+  local p = util.clamp(t / SPLASH_DUR, 0, 1)
+
+  screen.clear()
+
+  -- layout bands, kept apart so nothing overlaps:
+  --   title  y 8..16   wave  y 22..46 (axis 34)   subtitle y 54   bar y 60
+  local AXIS = 34
+
+  -- title rises into place over the first beat
+  local tf = util.clamp(t / 0.7, 0, 1)
+  local ty = 16 - (1 - tf) * 5
+  screen.font_face(26)   -- bmp/creep: narrow pixel face
+  screen.font_size(16)
+  screen.level(math.floor(1 + tf * 14))
+  screen.move(64, ty)
+  screen.text_center("COOLWAVE")
+
+  screen.font_face(1)
+  screen.font_size(8)
+
+  -- wave morphs through the real tables, amplitude easing out of the axis.
+  -- capped at 11px so the trace stays inside its band.
+  local grow = util.clamp(t / 0.55, 0, 1)
+  local amp = 11 * grow * grow
+  local pos = t * 1.15
+
+  screen.level(1)
+  screen.move(4, AXIS)
+  screen.line(124, AXIS)
+  screen.stroke()
+
+  screen.level(15)
+  screen.line_width(1)
+  local pts = #SPLASH_WAVES[1]
+  for i = 1, pts do
+    local x = 4 + (i - 1) * (120 / (pts - 1))
+    local y = AXIS - splash_sample(i, pos) * amp
+    if i == 1 then screen.move(x, y) else screen.line(x, y) end
+  end
+  screen.stroke()
+
+  -- subtitle fades in under the wave
+  local sf = util.clamp((t - 0.5) / 0.7, 0, 1)
+  if sf > 0 then
+    screen.level(math.floor(1 + sf * 5))
+    screen.move(64, 54)
+    screen.text_center("NES / C64 / FM / FORMANT")
+  end
+
+  -- loading bar: the engine really is reading 28 buffers behind this
+  screen.level(3)
+  screen.rect(4.5, 59.5, 119, 2)
+  screen.stroke()
+  screen.level(12)
+  screen.rect(4.5, 59.5, math.max(0, 119 * p), 2)
+  screen.fill()
+
+  screen.update()
+end
+
 function redraw()
+  if splash_t ~= nil then
+    draw_splash()
+    return
+  end
+
   screen.clear()
   screen.level(15)
   screen.move(0, 10)

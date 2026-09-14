@@ -22,6 +22,8 @@ coolwave/
 
 **Restart SuperCollider** (SYSTEM → RESTART) after installing so the engine compiles. Then launch **coolwave** from SELECT.
 
+On launch a short splash draws the real wavetables morphing into each other while the engine reads the 28 buffers. It clears itself after ~2.6 s, or immediately on any key or encoder — that first press is swallowed by the dismiss, so it will not also randomize.
+
 Wavetables are 1024-sample cycles resampled from the PD `wavs/` (original 600-sample loops). **`0104.wav` is omitted** — that file is the 5 s grain buffer used by grainfreeze, not an oscillator cycle.
 
 ## Controls
