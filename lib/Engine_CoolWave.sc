@@ -99,7 +99,7 @@ Engine_CoolWave : CroneEngine {
 
       var porta, phase, phaseLfoRate, phaseLfoAmt;
       var attack, decay, sustain, release, cutoff, res;
-      var freq, ampEnv, phaseLfo, phasor, phasePos, osc, filtered, sig;
+      var freq, ampEnv, envGate, phaseLfo, phasor, phasePos, osc, filtered, sig;
       var frames;
 
       porta = In.kr(portaBus).max(0);
@@ -116,12 +116,17 @@ Engine_CoolWave : CroneEngine {
       // portamento via Lag (0 = instant). Especially useful in mono.
       freq = Lag.kr(hz, porta);
 
-      // gate opens/closes the envelope; t_retrig re-strikes it without
-      // closing the gate, so a mono voice can re-attack on a new key.
+      // t_retrig must pull the env gate to 0 for a control cycle so EnvGen
+      // sees a real 0→1 edge. `gate + t_retrig` does not: 1+1=2 stays on.
+      // doneAction:2 would also free the synth if a 1-cycle blank finished a
+      // tiny release; free only when the real gate is closed and env is done.
+      envGate = gate * (1 - Trig1.kr(t_retrig, ControlDur.ir));
       ampEnv = EnvGen.kr(
         Env.adsr(attack, decay, sustain, release, curve: -3),
-        gate + t_retrig, doneAction: 2
+        envGate,
+        doneAction: 0
       );
+      FreeSelf.kr(Done.kr(ampEnv) * (1 - gate));
 
       frames = BufFrames.kr(bufnum);
       phaseLfo = SinOsc.kr(phaseLfoRate) * phaseLfoAmt * 0.5;
@@ -280,16 +285,22 @@ Engine_CoolWave : CroneEngine {
 
     if (monoMode, {
       if (monoSynth.notNil, {
-        // glide to the new pitch. re-strike the envelope unless legato is on,
-        // in which case the held envelope carries through (gate stays open).
-        monoSynth.set(\hz, hz, \vel, vel.clip(0, 1), \bufnum, buf.bufnum);
-        if (monoLegato.not, { monoSynth.set(\t_retrig, 1) });
+        // reuse the node so Lag.kr porta continues. reopen gate in case a
+        // noteOff just arrived; t_retrig re-attacks unless legato is on.
+        monoSynth.set(
+          \hz, hz,
+          \vel, vel.clip(0, 1),
+          \bufnum, buf.bufnum,
+          \gate, 1,
+          \t_retrig, if(monoLegato, 0, 1)
+        );
         monoId = id;
       }, {
-        monoSynth = Synth(\coolWaveVoice, this.prVoiceArgs(hz, vel, buf), grp);
+        synth = Synth(\coolWaveVoice, this.prVoiceArgs(hz, vel, buf), grp);
+        monoSynth = synth;
         monoId = id;
-        monoSynth.onFree({
-          if (monoSynth.notNil, {
+        synth.onFree({
+          if (monoSynth === synth, {
             monoSynth = nil;
             monoId = nil;
           });

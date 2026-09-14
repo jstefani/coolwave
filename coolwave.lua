@@ -239,9 +239,7 @@ local function arp_tick()
   -- use root key velocity if present (only matters when vel->amp is on)
   for n, v in pairs(active_notes) do vel = v; break end
 
-  if arp_playing ~= nil then
-    engine.noteOff(ARP_ID)
-  end
+  -- keep the mono voice gated so porta survives; engine retrigs the env
   engine.noteOn(note_hz(note), vel_amp(vel), ARP_ID)
   arp_playing = note
   arp_step = arp_step + 1
@@ -275,12 +273,26 @@ local function start_arp_clock()
   end)
 end
 
+local function resound_held()
+  -- engine.mono already silenced running voices; keys may still be held
+  if arp_on and mono then return end
+  if #note_order == 0 then return end
+  if mono then
+    local n = note_order[#note_order]
+    engine.noteOn(note_hz(n), vel_amp(active_notes[n] or FIXED_VEL), n)
+  else
+    for _, n in ipairs(note_order) do
+      engine.noteOn(note_hz(n), vel_amp(active_notes[n] or FIXED_VEL), n)
+    end
+  end
+end
+
 local function sync_arp()
   if arp_on and mono then
     start_arp_clock()
   else
     stop_arp_clock()
-    -- re-sound held notes if leaving arp
+    resound_held()
   end
 end
 
@@ -292,8 +304,8 @@ end
 local function apply_mono(v)
   mono = v
   engine.mono(mono and 1 or 0)
-  -- silence then resync arp
-  all_notes_off()
+  -- do not wipe active_notes: MIDI keys can still be down, and the arp
+  -- (and K3 randomize) needs that table to have something to play
   sync_arp()
   redraw()
 end
@@ -307,8 +319,12 @@ local function voice_note_on(note, vel)
   if not found then table.insert(note_order, note) end
 
   if arp_on and mono then
-    -- arp clock handles sounding
-    if arp_clock == nil then start_arp_clock() end
+    -- clock ticks then sleeps, so a key that lands during an empty wait
+    -- would otherwise sit silent until the next interval. restart so the
+    -- first held note speaks immediately.
+    if arp_clock == nil or arp_playing == nil then
+      start_arp_clock()
+    end
     return
   end
 
@@ -413,10 +429,10 @@ function randomize_arp()
 
   -- the arp clock only runs in mono (arp_tick and start_arp_clock both bail
   -- otherwise), so randomizing it from this page implies you want to hear
-  -- one: force MONO and switch the arp on. both go through params so the
-  -- state is saved and the actions start the clock.
-  params:set("mono", 2)
+  -- one: force the arp on, then MONO. enable first so apply_mono sees arp_on
+  -- and starts the clock against any keys still held.
   params:set("arp_enable", 2)
+  params:set("mono", 2)
 
   rand_flash = 1.0
   redraw()
@@ -538,9 +554,7 @@ local function add_params()
     redraw()
   end)
   params:add_control("arp_speed", "arp speed", controlspec.new(0.5, 20, "lin", 0.1, 8, "Hz"))
-  params:set_action("arp_speed", function(v)
-    if arp_on and mono then start_arp_clock() end
-  end)
+  -- clock loop already reads speed each tick; restarting would cut the note
   params:add_option("arp_type", "arp type", ARP_TYPES, 1)
   params:set_action("arp_type", function(v) arp_step = 1; redraw() end)
   params:add_option("arp_decay", "arp decay", ARP_DECAY_LABELS, 2)
