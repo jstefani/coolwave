@@ -76,6 +76,15 @@ local ARP_DECAY_LABELS = { "long", "med", "short", "tight", "click" }
 -- PD-ish single-note chord expand (Maj + oct) when only one key held
 local CHORD_INTERVALS = { 0, 4, 7, 12 }
 
+-- velocity -> amplitude is opt-in. chip voices are flat by design, so by
+-- default every note sounds at FIXED_VEL regardless of how hard it was hit.
+local FIXED_VEL = 0.8
+
+local function vel_amp(vel)
+  if params:get("vel_to_amp") == 2 then return vel end
+  return FIXED_VEL
+end
+
 local function note_hz(note)
   local oct = params:get("octave")
   return MusicUtil.note_num_to_freq(note + (oct * 12))
@@ -226,14 +235,14 @@ local function arp_tick()
   if arp_step > #seq or arp_step < 1 then arp_step = 1 end
 
   local note = seq[arp_step]
-  local vel = 0.75
-  -- use root key velocity if present
+  local vel = FIXED_VEL
+  -- use root key velocity if present (only matters when vel->amp is on)
   for n, v in pairs(active_notes) do vel = v; break end
 
   if arp_playing ~= nil then
     engine.noteOff(ARP_ID)
   end
-  engine.noteOn(note_hz(note), vel, ARP_ID)
+  engine.noteOn(note_hz(note), vel_amp(vel), ARP_ID)
   arp_playing = note
   arp_step = arp_step + 1
   if arp_step > #seq then arp_step = 1 end
@@ -304,7 +313,7 @@ local function voice_note_on(note, vel)
   end
 
   -- engine handles mono voice allocation and glide internally
-  engine.noteOn(note_hz(note), vel, note)
+  engine.noteOn(note_hz(note), vel_amp(vel), note)
 end
 
 local function voice_note_off(note)
@@ -329,7 +338,7 @@ local function voice_note_off(note)
     -- legato: if other notes held, glide to newest remaining
     if #note_order > 0 then
       local n = note_order[#note_order]
-      engine.noteOn(note_hz(n), active_notes[n] or 0.7, n)
+      engine.noteOn(note_hz(n), vel_amp(active_notes[n] or FIXED_VEL), n)
     else
       engine.noteOff(note)
     end
@@ -413,6 +422,58 @@ function randomize_arp()
   redraw()
 end
 
+-- cc -> param. values are normalised 0..1 and mapped through the param's
+-- own controlspec, so each cc covers the full declared range.
+local CC_MAP = {
+  [1]  = "phase",
+  [74] = "cutoff",
+  [71] = "res",
+  [72] = "release",
+  [73] = "attack",
+  [91] = "delay_vol",
+  [93] = "delay_fb"
+}
+
+local function midi_event(data)
+  local msg = midi.to_msg(data)
+
+  local want = params:get("midi_channel")
+  if want > 1 and msg.ch ~= nil and msg.ch ~= (want - 1) then return end
+
+  if msg.type == "note_on" then
+    if msg.vel == 0 then
+      voice_note_off(msg.note)
+    else
+      voice_note_on(msg.note, msg.vel / 127)
+    end
+    redraw()
+  elseif msg.type == "note_off" then
+    voice_note_off(msg.note)
+    redraw()
+  elseif msg.type == "cc" then
+    local id = CC_MAP[msg.cc]
+    if id ~= nil then
+      local p = params:lookup_param(id)
+      if p.controlspec ~= nil then
+        params:set_raw(id, msg.val / 127)
+      end
+      redraw()
+    end
+  end
+end
+
+-- midi.connect(n) hands back the shared midi.vports[n] table, so switching
+-- devices must clear the old port's handler -- otherwise the previous device
+-- keeps firing midi_event and both play at once.
+local function set_midi_device(n)
+  if midi_device ~= nil and midi_device.event == midi_event then
+    midi_device.event = nil
+  end
+  all_notes_off()
+  midi_device = midi.connect(n)
+  midi_device.event = midi_event
+end
+
 local function add_params()
   params:add_separator("coolwave")
 
@@ -489,10 +550,24 @@ local function add_params()
     if arp_decay_live then apply_arp_decay(v) end
   end)
 
-  params:add_group("midi", 1)
+  params:add_group("midi", 3)
+
+  local dev_opts = {}
+  for i = 1, #midi.vports do
+    local name = midi.vports[i].name
+    if name == nil or name == "" then name = "none" end
+    if string.len(name) > 15 then name = util.acronym(name) end
+    table.insert(dev_opts, i .. ": " .. name)
+  end
+  params:add_option("midi_device", "midi device", dev_opts, 1)
+  params:set_action("midi_device", function(v) set_midi_device(v) end)
+
   local ch_opts = { "all" }
   for i = 1, 16 do table.insert(ch_opts, tostring(i)) end
   params:add_option("midi_channel", "midi channel", ch_opts, 1)
+
+  -- off by default: this is a chip synth, notes should sound flat
+  params:add_option("vel_to_amp", "velocity > amp", { "off", "on" }, 1)
 
   params:add_binary("all_notes_off", "all notes off", "trigger", 0)
   params:set_action("all_notes_off", function(v)
@@ -502,45 +577,8 @@ local function add_params()
   params:bang()
 end
 
--- cc -> param. values are normalised 0..1 and mapped through the param's
--- own controlspec, so each cc covers the full declared range.
-local CC_MAP = {
-  [1]  = "phase",
-  [74] = "cutoff",
-  [71] = "res",
-  [72] = "release",
-  [73] = "attack",
-  [91] = "delay_vol",
-  [93] = "delay_fb"
-}
 
-local function midi_event(data)
-  local msg = midi.to_msg(data)
 
-  local want = params:get("midi_channel")
-  if want > 1 and msg.ch ~= nil and msg.ch ~= (want - 1) then return end
-
-  if msg.type == "note_on" then
-    if msg.vel == 0 then
-      voice_note_off(msg.note)
-    else
-      voice_note_on(msg.note, msg.vel / 127)
-    end
-    redraw()
-  elseif msg.type == "note_off" then
-    voice_note_off(msg.note)
-    redraw()
-  elseif msg.type == "cc" then
-    local id = CC_MAP[msg.cc]
-    if id ~= nil then
-      local p = params:lookup_param(id)
-      if p.controlspec ~= nil then
-        params:set_raw(id, msg.val / 127)
-      end
-      redraw()
-    end
-  end
-end
 
 local function fmt_hz(v)
   return string.format("%.0fHz", v)
@@ -608,8 +646,7 @@ function init()
   add_params()
   bang_engine()
 
-  midi_device = midi.connect()
-  midi_device.event = midi_event
+  -- midi_device param action already connected the port during add_params
 
   splash_t = 0
 

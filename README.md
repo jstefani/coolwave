@@ -35,7 +35,7 @@ Wavetables are 1024-sample cycles resampled from the PD `wavs/` (original 600-sa
 | **K1 + E2/E3** | Extra params (page-dependent; on WAVE: porta / octave) |
 | **K2** | **MONO / POLY** toggle (also a saved param: `voicing`) |
 | **K3** | Randomize — patch on most pages, **arp only** on the ARP page |
-| **MIDI notes** | Play voices (poly 6 with steal, or mono with portamento) |
+| **MIDI notes** | Play voices (poly 6 with steal, or mono with portamento). **Velocity does not affect volume by default** — see `velocity > amp` |
 | **MIDI CC** | 1 phase · 74 cutoff · 71 res · 73 attack · 72 release · 91 delay vol · 93 delay fb |
 
 ### Page map
@@ -65,6 +65,10 @@ Adding or releasing a key mid-pattern resumes near the current position rather t
 
 Portamento is especially useful in mono (WAVE page, K1+E2).
 
+### Velocity
+
+Notes sound at a fixed level regardless of how hard you play — chip voices are flat by design. Turn **velocity > amp** on in PARAMS > midi if you want MIDI velocity to drive amplitude.
+
 ### Phase note
 
 Phase is a **0–1** offset into the wavetable cycle (plus optional LFO). **Not all waves speak across the full phase range** — if a wave goes thin or silent, nudge phase toward 0.
@@ -77,7 +81,7 @@ Phase is a **0–1** offset into the wavetable cycle (plus optional LFO). **Not 
 - cutoff, resonance  
 - delay time / fb / vol / pan rate  
 - arp on, speed, type, decay  
-- **midi channel** (all, or 1–16)  
+- **midi device** (1–16), **midi channel** (all, or 1–16), **velocity > amp** (off by default)  
 - **all notes off** (trigger)
 
 ## Engine commands
