@@ -8,7 +8,7 @@
 -- K1 hold + E2/E3  porta / octave (extra)
 -- K2  mono/poly toggle
 -- K3  randomize patch (NES-ish); on the ARP page, randomizes the arp only
--- MIDI notes → voice synth; arp runs in Lua when MONO+ARP
+-- MIDI notes → voice synth; arp runs in Lua whenever ARP is on
 
 engine.name = 'CoolWave'
 
@@ -25,11 +25,13 @@ local active_notes = {}   -- note -> vel (held keys)
 local note_order = {}     -- as-played order
 local mono = false
 local arp_on = false
-local arp_clock = nil
+local arp_metro = nil
+local arp_running = false
 local arp_step = 1
 local arp_len = 0         -- last seen sequence length, to detect held-key changes
 local arp_playing = nil   -- currently sounding arp note id
 local ARP_ID = 8000
+local ARP_ATTACK = 0.005  -- pad attacks bury 10Hz steps; snap while arping
 
 -- UI wave 1..28 → files 0100-0103, 0105-0128 (skip 0104)
 local WAVE_LABELS = {
@@ -128,6 +130,7 @@ local function apply_arp_decay(preset)
   }
   local p = map[preset] or map[1]
   -- the param actions already push these to the engine
+  params:set("attack", ARP_ATTACK)
   params:set("decay", p[1])
   params:set("sustain", p[2])
 end
@@ -208,7 +211,7 @@ local function arp_sequence()
 end
 
 local function arp_tick()
-  if not (arp_on and mono) then return end
+  if not arp_on then return end
   local seq = arp_sequence()
   if #seq == 0 then
     if arp_playing ~= nil then
@@ -239,7 +242,9 @@ local function arp_tick()
   -- use root key velocity if present (only matters when vel->amp is on)
   for n, v in pairs(active_notes) do vel = v; break end
 
-  -- keep the mono voice gated so porta survives; engine retrigs the env
+  -- keep the mono voice gated so porta survives; engine retrigs the env.
+  -- a long patch attack (pset 28 is 4s) makes 10Hz steps inaudible.
+  engine.attack(ARP_ATTACK)
   engine.noteOn(note_hz(note), vel_amp(vel), ARP_ID)
   arp_playing = note
   arp_step = arp_step + 1
@@ -248,34 +253,40 @@ local function arp_tick()
 end
 
 local function stop_arp_clock()
-  if arp_clock ~= nil then
-    clock.cancel(arp_clock)
-    arp_clock = nil
-  end
+  if arp_metro ~= nil then arp_metro:stop() end
+  arp_running = false
   if arp_playing ~= nil then
     engine.noteOff(ARP_ID)
     arp_playing = nil
   end
+  engine.attack(params:get("attack"))
 end
 
 local function start_arp_clock()
-  stop_arp_clock()
-  if not (arp_on and mono) then return end
+  if not arp_on then
+    stop_arp_clock()
+    return
+  end
   arp_step = 1
   arp_len = 0
-  arp_clock = clock.run(function()
-    while true do
-      local spd = params:get("arp_speed") -- Hz-ish 1..20
-      local wait = 1 / math.max(0.25, spd)
+  if arp_metro == nil then
+    arp_metro = metro.init()
+    arp_metro.event = function()
+      arp_metro.time = 1 / math.max(0.25, params:get("arp_speed"))
       arp_tick()
-      clock.sleep(wait)
     end
-  end)
+  else
+    arp_metro:stop()
+  end
+  arp_metro.time = 1 / math.max(0.25, params:get("arp_speed"))
+  arp_running = true
+  arp_tick()
+  arp_metro:start()
 end
 
 local function resound_held()
   -- engine.mono already silenced running voices; keys may still be held
-  if arp_on and mono then return end
+  if arp_on then return end
   if #note_order == 0 then return end
   if mono then
     local n = note_order[#note_order]
@@ -288,7 +299,7 @@ local function resound_held()
 end
 
 local function sync_arp()
-  if arp_on and mono then
+  if arp_on then
     start_arp_clock()
   else
     stop_arp_clock()
@@ -311,6 +322,9 @@ local function apply_mono(v)
 end
 
 local function voice_note_on(note, vel)
+  -- pset restore can set arp_enable without firing the action (matrix
+  -- reads the pset silent). trust the param, not the stale local.
+  arp_on = params:get("arp_enable") == 2
   active_notes[note] = vel
   local found = false
   for _, n in ipairs(note_order) do
@@ -318,12 +332,13 @@ local function voice_note_on(note, vel)
   end
   if not found then table.insert(note_order, note) end
 
-  if arp_on and mono then
-    -- clock ticks then sleeps, so a key that lands during an empty wait
-    -- would otherwise sit silent until the next interval. restart so the
-    -- first held note speaks immediately.
-    if arp_clock == nil or arp_playing == nil then
+  if arp_on then
+    -- metro fires after `time`, so a key during an empty interval would
+    -- sit silent until the next tick. speak immediately on first hold.
+    if not arp_running then
       start_arp_clock()
+    elseif arp_playing == nil then
+      arp_tick()
     end
     return
   end
@@ -340,7 +355,7 @@ local function voice_note_off(note)
   end
   note_order = new_order
 
-  if arp_on and mono then
+  if arp_on then
     if next(active_notes) == nil then
       if arp_playing ~= nil then
         engine.noteOff(ARP_ID)
@@ -427,12 +442,12 @@ function randomize_arp()
   params:set("arp_decay", d)
   apply_arp_decay(d)
 
-  -- the arp clock only runs in mono (arp_tick and start_arp_clock both bail
-  -- otherwise), so randomizing it from this page implies you want to hear
-  -- one: force the arp on, then MONO. enable first so apply_mono sees arp_on
-  -- and starts the clock against any keys still held.
+  -- turn the arp on. params:set is a no-op if already on, which is the
+  -- pset-restore case — still force the local and start the metro.
   params:set("arp_enable", 2)
+  arp_on = true
   params:set("mono", 2)
+  sync_arp()
 
   rand_flash = 1.0
   redraw()
@@ -587,6 +602,13 @@ local function add_params()
   params:set_action("all_notes_off", function(v)
     if v == 1 then all_notes_off() end
   end)
+
+  -- matrix (and norns) re-read the pset after init, often silent, so the
+  -- arp_enable / mono actions never run. pick up the stored values here.
+  params.action_read = function()
+    arp_on = params:get("arp_enable") == 2
+    apply_mono(params:get("mono") == 2)
+  end
 
   params:bang()
 end
@@ -862,6 +884,8 @@ function redraw()
     return
   end
 
+  arp_on = params:get("arp_enable") == 2
+
   screen.clear()
   draw_page_tabs()
 
@@ -911,8 +935,6 @@ function redraw()
       extra = string.format("lfo %.1fHz", params:get("phase_lfo_rate"))
     elseif page == 5 then
       extra = string.format("spd %.1f  %s", params:get("arp_speed"), ARP_DECAY_LABELS[params:get("arp_decay")])
-      -- K3 here switches to MONO and turns the arp on, so point at it
-      if not mono then extra = extra .. " (K3=MONO)" end
     end
     if rand_flash > 0 then
       screen.level(15)
