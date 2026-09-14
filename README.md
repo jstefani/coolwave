@@ -35,8 +35,7 @@ Wavetables are 1024-sample cycles resampled from the PD `wavs/` (original 600-sa
 | **K1 + E2/E3** | Extra params (page-dependent; on WAVE: porta / octave) |
 | **K2** | **MONO / POLY** toggle (also a saved param: `voicing`) |
 | **K3** | Randomize — patch on most pages, **arp only** on the ARP page |
-| **MIDI notes** | Play voices (poly 6 with steal, or mono with portamento). **Velocity does not affect volume by default** — see `velocity > amp` |
-| **MIDI CC** | 1 phase · 74 cutoff · 71 res · 73 attack · 72 release · 91 delay vol · 93 delay fb |
+| **MIDI notes** | Play voices — poly 6 with steal, or mono with portamento |
 
 ### Page map
 
@@ -47,6 +46,25 @@ Wavetables are 1024-sample cycles resampled from the PD `wavs/` (original 600-sa
 | PHASE | phase (0–1) | phase LFO amt | LFO rate / res |
 | DELAY | delay time | delay fb | delay vol / pan rate |
 | ARP | arp on/off | type (up/down/updown/order) | speed / decay preset |
+
+### MIDI
+
+Set up under **PARAMS > midi**. All three are saved in psets.
+
+| Param | Values | Default | Notes |
+|-------|--------|---------|-------|
+| **midi device** | `1:` … `16:` (port + device name) | `1` | Which norns MIDI port to listen on. Switching ports releases held notes and detaches the old one, so only the selected device plays. |
+| **midi channel** | `all`, `1`–`16` | `all` | Notes and CC on other channels are ignored. |
+| **velocity > amp** | `off` / `on` | `off` | Off: every note sounds at the same level — chip voices are flat. On: MIDI velocity drives amplitude. |
+
+Incoming CC is fixed (no MIDI learn). Each CC spans the param's full range:
+
+| CC | Param | CC | Param |
+|----|-------|----|-------|
+| **1** | phase | **73** | attack |
+| **71** | resonance | **74** | cutoff |
+| **72** | release | **91** | delay vol |
+| | | **93** | delay fb |
 
 ### Arp (favorite in mono)
 
@@ -64,10 +82,6 @@ Adding or releasing a key mid-pattern resumes near the current position rather t
 **K3 on the ARP page** randomizes speed, type and decay without touching the tone, applies the decay preset to the envelope, and switches to **MONO** with the arp **on** — the arp clock only runs in mono, so this makes one press always produce an audible arp. K3 on any other page randomizes the patch and leaves the arp and voicing alone.
 
 Portamento is especially useful in mono (WAVE page, K1+E2).
-
-### Velocity
-
-Notes sound at a fixed level regardless of how hard you play — chip voices are flat by design. Turn **velocity > amp** on in PARAMS > midi if you want MIDI velocity to drive amplitude.
 
 ### Phase note
 
