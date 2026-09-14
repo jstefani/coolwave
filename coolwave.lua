@@ -3,7 +3,7 @@
 -- Port of Organelle / Pure Data Wavy.pd + main.pd
 -- (separate from grainfreeze)
 --
--- E1  page: WAVE / ENV / PHASE / DELAY / ARP (stops at ends)
+-- E1  page: wave / env / phase / delay / arp (stops at ends)
 -- E2/E3  edit two params on page
 -- K1 hold + E2/E3  porta / octave (extra)
 -- K2  mono/poly toggle
@@ -16,7 +16,7 @@ MusicUtil = require 'musicutil'
 
 local midi_device
 local page = 1
-local pages = { "WAVE", "ENV", "PHASE", "DELAY", "ARP" }
+local pages = { "wave", "env", "phase", "delay", "arp" }
 local ui_metro
 local rand_flash = 0
 local k1_held = false
@@ -810,6 +810,38 @@ local function draw_splash()
   screen.update()
 end
 
+local function draw_page_tabs()
+  -- packed across 128px: dim labels, current page at full white
+  local n = #pages
+  local widths = {}
+  local total_w = 0
+  for i = 1, n do
+    widths[i] = math.floor(screen.text_extents(pages[i]) + 0.5)
+    total_w = total_w + widths[i]
+  end
+  local gaps = n - 1
+  local min_gap = 1
+  local leftover = 128 - total_w - min_gap * gaps
+  if leftover < 0 then leftover = 0 end
+  local base_gap = min_gap + math.floor(leftover / gaps)
+  local extra = leftover % gaps
+  local x = 0
+  for i = 1, n do
+    screen.level(i == page and 15 or 5)
+    screen.move(x, 10)
+    screen.text(pages[i])
+    x = x + widths[i]
+    if i < n then
+      local g = base_gap
+      if extra > 0 then
+        g = g + 1
+        extra = extra - 1
+      end
+      x = x + g
+    end
+  end
+end
+
 function redraw()
   if splash_t ~= nil then
     draw_splash()
@@ -817,13 +849,7 @@ function redraw()
   end
 
   screen.clear()
-  screen.level(15)
-  screen.move(0, 10)
-  screen.text("coolwave")
-
-  screen.level(6)
-  screen.move(128, 10)
-  screen.text_right(pages[page])
+  draw_page_tabs()
 
   -- wave name
   screen.level(15)
